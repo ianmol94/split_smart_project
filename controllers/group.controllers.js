@@ -14,7 +14,6 @@ const assertMembership = (group, userId) => {
 // @route  POST /api/groups
 // @access Private
 const createGroup = asyncHandler(async (req, res) => {
-  const { name, description, memberEmails = [] } = req.body;
 
   if (!name) {
     throw new ApiError(400, 'Group name is required');
