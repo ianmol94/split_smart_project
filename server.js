@@ -1,18 +1,29 @@
+require('dotenv').config({ quiet: true });
+
 const express = require('express');
 const connectDB = require('./config/db');
-require('dotenv').config();
+const { notFound, errorHandler } = require('./middleware/error.middleware');
 
 const app = express();
-connectDB(); // ← db.js called here
+
+connectDB();
 
 app.use(express.json());
+
+app.get('/', (req, res) => {
+  res.json({ message: 'Split Smart API is running' });
+});
 
 // Mount routes
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/groups', require('./routes/group.routes'));
 app.use('/api/expenses', require('./routes/expense.routes'));
 
-// Error middleware always last
-app.use(require('./middleware/error.middleware'));
+// 404 handler for unmatched routes
+app.use(notFound);
 
-app.listen(process.env.PORT, () => console.log(`Server running on port ${process.env.PORT}`));
+// Central error handler - always last
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

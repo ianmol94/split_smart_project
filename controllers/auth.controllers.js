@@ -1,58 +1,61 @@
-const User = require('../models/users'); //interacts with users collection 
-const jwt = require('jsonwebtoken'); //used to create JWTs after successful register/login 
+const asyncHandler = require('../utils/asyncHandler');
+const ApiError = require('../utils/ApiError');
+const generateToken = require('../utils/generateToken');
+const User = require('../models/User');
 
 
-//by using userId JWT_SECRET signs the token so it can't be tampered with
-const generateToken = (userId) => {
-  return jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
-};
+const register = asyncHandler(async (req, res) => {
+  const { name, email, password } = req.body;
 
-//USER registration flow 
-// POST /api/auth/register
-exports.register = async (req, res, next) => {
-  try {
-
-    //here it extracts name, email,password from request body 
-    const { name, email, password } = req.body;
-
-    //checks if email exists and res is send with message
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ message: 'Email already registered' });
-    }
-
-    //creating user and also generating JWT 
-    const user = await User.create({ name, email, password });
-    const token = generateToken(user._id);
-
-    //sending response to client after registration 
-    res.status(201).json({ token, user: { id: user._id, name: user.name, email: user.email } });
-  } catch (err) {
-    next(err); // passes to error.middleware.js
+  if (!name || !email || !password) {
+    throw new ApiError(400, 'Name, email and password are all required');
   }
-};
 
-//LOGIN flow 
-// POST /api/auth/login
-exports.login = async (req, res, next) => {
-  try {
-    //extracting email, password 
-    const { email, password } = req.body;
-
-
-    //finding user 
-    const user = await User.findOne({ email });
-    //return 401 status if user not found 
-    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
-
-    //also sending same message when password is not matched 
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) return res.status(401).json({ message: 'Invalid credentials' });
-
-    //generating JWT if user logged in sucessfully 
-    const token = generateToken(user._id);
-    res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
-  } catch (err) {
-    next(err);
+  const existingUser = await User.findOne({ email: email.toLowerCase() });
+  if (existingUser) {
+    throw new ApiError(409, 'An account with this email already exists');
   }
-};
+
+  const user = await User.create({ name, email, password });
+  const token = generateToken(user._id);
+
+  res.status(201).json({
+    success: true,
+    token,
+    user: { id: user._id, name: user.name, email: user.email }
+  });
+});
+
+// @route  POST /api/auth/login
+// @access Public
+const login = asyncHandler(async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    throw new ApiError(400, 'Email and password are required');
+  }
+
+  const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+  if (!user || !(await user.comparePassword(password))) {
+    throw new ApiError(401, 'Invalid email or password');
+  }
+
+  const token = generateToken(user._id);
+
+  res.status(200).json({
+    success: true,
+    token,
+    user: { id: user._id, name: user.name, email: user.email }
+  });
+});
+
+// @route  GET /api/auth/me
+// @access Private
+const getMe = asyncHandler(async (req, res) => {
+  res.status(200).json({
+    success: true,
+    user: { id: req.user._id, name: req.user.name, email: req.user.email }
+  });
+});
+
+module.exports = { register, login, getMe };

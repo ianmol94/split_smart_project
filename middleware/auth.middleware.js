@@ -1,34 +1,34 @@
-const jwt = require('jsonwebtoken'); //verifies JWT 
-const User = require('../models/users'); //fetches user details form mongoDB
+const jwt = require('jsonwebtoken');
+const asyncHandler = require('../utils/asyncHandler');
+const ApiError = require('../utils/ApiError');
+const User = require('../models/User');
 
-//middleware function, and receives req,res,next 
-exports.protect = async (req, res, next) => {
+// Protects routes: requires a valid Bearer JWT, attaches req.user
+const protect = asyncHandler(async (req, res, next) => {
+  let token;
+
+  if (req.headers.authorization?.startsWith('Bearer ')) {
+    token = req.headers.authorization.split(' ')[1];
+  }
+
+  if (!token) {
+    throw new ApiError(401, 'Not authorized, no token provided');
+  }
+
   try {
-    //gets authorization from client like Authorization: Bearer eyJhbGciOiJIUzI1Ni...
-    const authHeader = req.headers.authorization;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
 
-    //checks token exist or not 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ message: 'No token, authorization denied' });
+    if (!user) {
+      throw new ApiError(401, 'Not authorized, user no longer exists');
     }
 
-    //extracting of token, split creates : ["Bearer", "abc.xyz.123"], [1] == token 
-    const token = authHeader.split(' ')[1];
-
-    //verifying the token 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    //finding the user by decoded token and id
-    req.user = await User.findById(decoded.id).select('-password');
-
-    //if user don't exists, return this 
-    if (!user) {
-  return res.status(401).json({
-    message: 'User no longer exists'
-  });
-}
+    req.user = user;
     next();
   } catch (err) {
-    res.status(401).json({ message: 'Token invalid or expired' });
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(401, 'Not authorized, token failed or expired');
   }
-};
+});
+
+module.exports = { protect };

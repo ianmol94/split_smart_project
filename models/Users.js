@@ -1,37 +1,42 @@
-const mongoose = require("mongoose")
-const bcrpyt = require("bcryptjs")
+const mongoose = require('mongoose');
+const bcrypt = require('bcrypt');
 
 const userSchema = new mongoose.Schema(
-    {
-        name : {
-            type: String,
-            required: true,
-            trim: true, 
-        },
-        email: {
-            type: String,
-            required:true, 
-            unique:true,
-            lowercase:true, 
-        }, 
-        password:{
-            type: String, 
-            required:true,
-            minLength:8,
-        },
-        timestamps:true     
+  {
+    name: {
+      type: String,
+      required: [true, 'Name is required'],
+      trim: true
+    },
+    email: {
+      type: String,
+      required: [true, 'Email is required'],
+      unique: true,
+      lowercase: true,
+      trim: true,
+      match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email']
+    },
+    password: {
+      type: String,
+      required: [true, 'Password is required'],
+      minlength: 6,
+      select: false // never return password by default
     }
-); 
+  },
+  { timestamps: true }
+);
 
-//Middleware
-userSchema.pre('save', async function (next) { // run this async function before calling .save()
-  if (!this.isModified('password')) return next(); //check if password field is modified, yes, move next
-  this.password = await bcrypt.hash(this.password, 10); //password->hashing, 10->salt rounds(makes the password more secure)
-  next();//telling mongoose to continue saving document
+// Hash password before saving
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) return next();
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+  next();
 });
 
-userSchema.methods.comparePassword = async function (enteredPassword) { //comparePassword->method created, a funciton compares only enteredPassword, in bcrypt library enteredPassword is hashed with same salt rounds, compared with stored password by taking this.password->stored in DB
-  return await bcrypt.compare(enteredPassword, this.password);
-}
+// Instance method to compare passwords
+userSchema.methods.comparePassword = function (candidatePassword) {
+  return bcrypt.compare(candidatePassword, this.password);
+};
 
-module.exports = mongoose.model('User',userSchema); //creates model of the name "User" with schema of "userSchema", also exports so other files can use it. 
+module.exports = mongoose.model('User', userSchema);
