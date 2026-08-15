@@ -1,25 +1,19 @@
-const router = require('express').Router();
-const { protect } = require('../middleware/auth.middleware');
+const express = require('express');
 const {
   addExpense,
-  getGroupExpenses,
-  getExpenseById,
-  updateExpense,
+  getExpensesByGroup,
   deleteExpense,
   getGroupBalances
-} = require('../controllers/expense.controllers');
+} = require('../controllers/expense.controller');
+const { protect } = require('../middleware/auth.middleware');
 
-// All expense routes are protected
-router.use(protect);
+const router = express.Router();
 
-// Core CRUD
-router.post('/', addExpense);                          // POST   /api/expenses
-router.get('/group/:groupId', getGroupExpenses);       // GET    /api/expenses/group/:groupId
-router.get('/:expenseId', getExpenseById);             // GET    /api/expenses/:expenseId
-router.put('/:expenseId', updateExpense);              // PUT    /api/expenses/:expenseId
-router.delete('/:expenseId', deleteExpense);           // DELETE /api/expenses/:expenseId
+router.use(protect); // every expense route requires authentication
 
-// Balance calculation — the core feature
-router.get('/group/:groupId/balances', getGroupBalances); // GET /api/expenses/group/:groupId/balances
+router.route('/').post(addExpense);
+router.route('/:id').delete(deleteExpense);
+router.route('/group/:groupId').get(getExpensesByGroup);
+router.route('/group/:groupId/balances').get(getGroupBalances);
 
 module.exports = router;

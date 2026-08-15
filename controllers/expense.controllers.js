@@ -1,191 +1,206 @@
-const Expense = require('../models/expense');
-const Group = require('../models/group');
-const AppError = require('../utils/AppError');
+const asyncHandler = require('../utils/asyncHandler');
+const ApiError = require('../utils/ApiError');
+const Expense = require('../models/Expense');
+const Group = require('../models/Group');
+const { assertMembership } = require('./group.controller');
 
-// ─── POST /api/expenses ────────────────────────────────────────────────
-exports.addExpense = async (req, res, next) => {
-  try {
-    const { description, amount, group, splitBetween, splitType } = req.body;
+const round2 = (n) => Math.round(n * 100) / 100;
 
-    // Check group exists
-    const groupDoc = await Group.findById(group);
-    if (!groupDoc) return next(new AppError('Group not found', 404));
 
-    // Check all splitBetween users are group members
-    const allMembers = groupDoc.members.map(m => m.toString());
-    const validSplit = splitBetween.every(userId => allMembers.includes(userId));
-    if (!validSplit) return next(new AppError('Some users are not group members', 400));
+const buildSplits = (amount, splitType, participants) => {
+  if (!Array.isArray(participants) || participants.length === 0) {
+    throw new ApiError(400, 'At least one participant is required to split an expense');
+  }
 
-    const expense = await Expense.create({
-      description,
-      amount,
-      paidBy: req.user._id,   // logged in user paid
-      group,
-      splitBetween,
-      splitType: splitType || 'equal'
-    });
+  if (splitType === 'equal') {
+    const share = round2(amount / participants.length);
+    const splits = participants.map((p) => ({ user: p.user || p, amount: share }));
+    const remainder = round2(amount - share * participants.length);
+    if (remainder !== 0) splits[0].amount = round2(splits[0].amount + remainder);
+    return splits;
+  }
 
-    await expense.populate('paidBy', 'name email');
-    await expense.populate('splitBetween', 'name email');
-
-    res.status(201).json({ success: true, expense });
-  } catch (err) { next(err); }
-};
-
-// ─── GET /api/expenses/group/:groupId ─────────────────────────────────
-exports.getGroupExpenses = async (req, res, next) => {
-  try {
-    const group = await Group.findById(req.params.groupId);
-    if (!group) return next(new AppError('Group not found', 404));
-
-    // Only group members can see expenses
-    const isMember = group.members
-      .map(m => m.toString())
-      .includes(req.user._id.toString());
-    if (!isMember) return next(new AppError('Not a group member', 403));
-
-    const expenses = await Expense.find({ group: req.params.groupId })
-      .populate('paidBy', 'name email')
-      .populate('splitBetween', 'name email')
-      .sort({ createdAt: -1 }); // newest first
-
-    res.json({ success: true, count: expenses.length, expenses });
-  } catch (err) { next(err); }
-};
-
-// ─── GET /api/expenses/:expenseId ─────────────────────────────────────
-exports.getExpenseById = async (req, res, next) => {
-  try {
-    const expense = await Expense.findById(req.params.expenseId)
-      .populate('paidBy', 'name email')
-      .populate('splitBetween', 'name email')
-      .populate('group', 'name');
-
-    if (!expense) return next(new AppError('Expense not found', 404));
-
-    res.json({ success: true, expense });
-  } catch (err) { next(err); }
-};
-
-// ─── PUT /api/expenses/:expenseId ─────────────────────────────────────
-exports.updateExpense = async (req, res, next) => {
-  try {
-    const expense = await Expense.findById(req.params.expenseId);
-    if (!expense) return next(new AppError('Expense not found', 404));
-
-    // Only the person who paid can edit
-    if (expense.paidBy.toString() !== req.user._id.toString()) {
-      return next(new AppError('Not authorized to update this expense', 403));
+  if (splitType === 'exact') {
+    const splits = participants.map((p) => ({ user: p.user, amount: round2(p.amount) }));
+    const sum = round2(splits.reduce((acc, s) => acc + s.amount, 0));
+    if (sum !== round2(amount)) {
+      throw new ApiError(400, `Exact split amounts (${sum}) must add up to the total (${amount})`);
     }
+    return splits;
+  }
 
-    const { description, amount, splitBetween, splitType } = req.body;
-
-    if (description) expense.description = description;
-    if (amount) expense.amount = amount;
-    if (splitBetween) expense.splitBetween = splitBetween;
-    if (splitType) expense.splitType = splitType;
-
-    await expense.save();
-    await expense.populate('paidBy', 'name email');
-    await expense.populate('splitBetween', 'name email');
-
-    res.json({ success: true, expense });
-  } catch (err) { next(err); }
-};
-
-// ─── DELETE /api/expenses/:expenseId ──────────────────────────────────
-exports.deleteExpense = async (req, res, next) => {
-  try {
-    const expense = await Expense.findById(req.params.expenseId);
-    if (!expense) return next(new AppError('Expense not found', 404));
-
-    // Only the person who paid can delete
-    if (expense.paidBy.toString() !== req.user._id.toString()) {
-      return next(new AppError('Not authorized to delete this expense', 403));
+  if (splitType === 'percentage') {
+    const totalPct = participants.reduce((acc, p) => acc + Number(p.percentage), 0);
+    if (round2(totalPct) !== 100) {
+      throw new ApiError(400, `Percentages must add up to 100 (got ${totalPct})`);
     }
-
-    await expense.deleteOne();
-    res.json({ success: true, message: 'Expense deleted' });
-  } catch (err) { next(err); }
-};
-
-// ─── GET /api/expenses/group/:groupId/balances ────────────────────────
-exports.getGroupBalances = async (req, res, next) => {
-  try {
-    const group = await Group.findById(req.params.groupId)
-      .populate('members', 'name email');
-    if (!group) return next(new AppError('Group not found', 404));
-
-    const expenses = await Expense.find({ group: req.params.groupId });
-
-    // Step 1 — net balance map  (+ve = owed money, -ve = owes money)
-    const balanceMap = {};
-    group.members.forEach(m => { balanceMap[m._id.toString()] = 0; });
-
-    expenses.forEach(expense => {
-      const { amount, paidBy, splitBetween, splitType } = expense;
-      const n = splitBetween.length;
-      if (n === 0) return;
-
-      let share = 0;
-      if (splitType === 'equal') share = amount / n;
-
-      const payerId = paidBy.toString();
-
-      // Payer gets credit for full amount
-      balanceMap[payerId] = (balanceMap[payerId] || 0) + amount;
-
-      // Each member in split owes their share
-      splitBetween.forEach(userId => {
-        const uid = userId.toString();
-        if (splitType === 'equal') {
-          balanceMap[uid] = (balanceMap[uid] || 0) - share;
-        }
-      });
-    });
-
-    // Step 2 — Greedy settlement (minimum transactions)
-    // Separate into creditors (+ve) and debtors (-ve)
-    const creditors = []; // people owed money
-    const debtors = [];   // people who owe money
-
-    group.members.forEach(member => {
-      const bal = balanceMap[member._id.toString()];
-      if (bal > 0.01) creditors.push({ id: member._id.toString(), name: member.name, amount: bal });
-      if (bal < -0.01) debtors.push({ id: member._id.toString(), name: member.name, amount: -bal });
-    });
-
-    // Greedily match largest creditor with largest debtor
-    const settlements = [];
-    let i = 0, j = 0;
-
-    while (i < creditors.length && j < debtors.length) {
-      const credit = creditors[i];
-      const debt = debtors[j];
-      const settled = Math.min(credit.amount, debt.amount);
-
-      settlements.push({
-        from: debt.name,
-        to: credit.name,
-        amount: parseFloat(settled.toFixed(2))
-      });
-
-      credit.amount -= settled;
-      debt.amount -= settled;
-
-      if (credit.amount < 0.01) i++;
-      if (debt.amount < 0.01) j++;
-    }
-
-    // Step 3 — Build readable per-member summary
-    const summary = group.members.map(member => ({
-      user: { id: member._id, name: member.name, email: member.email },
-      balance: parseFloat((balanceMap[member._id.toString()] || 0).toFixed(2)),
-      status: balanceMap[member._id.toString()] > 0.01 ? 'gets back'
-            : balanceMap[member._id.toString()] < -0.01 ? 'owes'
-            : 'settled up'
+    return participants.map((p) => ({
+      user: p.user,
+      amount: round2((Number(p.percentage) / 100) * amount)
     }));
+  }
 
-    res.json({ success: true, summary, settlements });
-  } catch (err) { next(err); }
+  throw new ApiError(400, `Unsupported splitType: ${splitType}`);
 };
+
+
+const addExpense = asyncHandler(async (req, res) => {
+  const {
+    group: groupId,
+    description,
+    amount,
+    paidBy,
+    splitType = 'equal',
+    participants
+  } = req.body;
+
+  if (!groupId || !description || !amount) {
+    throw new ApiError(400, 'group, description and amount are required');
+  }
+
+  const group = await Group.findById(groupId);
+  if (!group) {
+    throw new ApiError(404, 'Group not found');
+  }
+  assertMembership(group, req.user._id);
+
+  const payerId = paidBy || req.user._id;
+  const payerIsMember = group.members.some((m) => m.toString() === payerId.toString());
+  if (!payerIsMember) {
+    throw new ApiError(400, 'The payer must be a member of the group');
+  }
+
+
+  const effectiveParticipants =
+    participants && participants.length ? participants : group.members.map((m) => ({ user: m }));
+
+  for (const p of effectiveParticipants) {
+    const uid = (p.user || p).toString();
+    if (!group.members.some((m) => m.toString() === uid)) {
+      throw new ApiError(400, 'All participants must be members of the group');
+    }
+  }
+
+  const splits = buildSplits(Number(amount), splitType, effectiveParticipants);
+
+  const expense = await Expense.create({
+    group: groupId,
+    description,
+    amount: Number(amount),
+    paidBy: payerId,
+    splitType,
+    splits,
+    createdBy: req.user._id
+  });
+
+  await expense.populate([
+    { path: 'paidBy', select: 'name email' },
+    { path: 'splits.user', select: 'name email' }
+  ]);
+
+  res.status(201).json({ success: true, expense });
+});
+
+
+const getExpensesByGroup = asyncHandler(async (req, res) => {
+  const group = await Group.findById(req.params.groupId);
+  if (!group) {
+    throw new ApiError(404, 'Group not found');
+  }
+  assertMembership(group, req.user._id);
+
+  const expenses = await Expense.find({ group: req.params.groupId })
+    .populate('paidBy', 'name email')
+    .populate('splits.user', 'name email')
+    .sort('-createdAt');
+
+  res.status(200).json({ success: true, count: expenses.length, expenses });
+});
+
+
+const deleteExpense = asyncHandler(async (req, res) => {
+  const expense = await Expense.findById(req.params.id);
+  if (!expense) {
+    throw new ApiError(404, 'Expense not found');
+  }
+
+  const group = await Group.findById(expense.group);
+  assertMembership(group, req.user._id);
+
+  
+  const isCreator = expense.createdBy.toString() === req.user._id.toString();
+  const isPayer = expense.paidBy.toString() === req.user._id.toString();
+  if (!isCreator && !isPayer) {
+    throw new ApiError(403, 'Only the expense creator or payer can delete this expense');
+  }
+
+  await expense.deleteOne();
+  res.status(200).json({ success: true, deleted: req.params.id });
+});
+
+
+const getGroupBalances = asyncHandler(async (req, res) => {
+  const group = await Group.findById(req.params.groupId).populate('members', 'name email');
+  if (!group) {
+    throw new ApiError(404, 'Group not found');
+  }
+  assertMembership(group, req.user._id);
+
+  const expenses = await Expense.find({ group: req.params.groupId });
+
+  const net = {}; // userId -> net balance
+  group.members.forEach((m) => (net[m._id.toString()] = 0));
+
+  expenses.forEach((exp) => {
+    const payerId = exp.paidBy.toString();
+    net[payerId] = (net[payerId] || 0) + exp.amount;
+    exp.splits.forEach((s) => {
+      const uid = s.user.toString();
+      net[uid] = (net[uid] || 0) - s.amount;
+    });
+  });
+
+  Object.keys(net).forEach((k) => (net[k] = round2(net[k])));
+
+  
+  const creditors = Object.entries(net)
+    .filter(([, v]) => v > 0.01)
+    .map(([user, amount]) => ({ user, amount }))
+    .sort((a, b) => b.amount - a.amount);
+
+  const debtors = Object.entries(net)
+    .filter(([, v]) => v < -0.01)
+    .map(([user, amount]) => ({ user, amount: -amount }))
+    .sort((a, b) => b.amount - a.amount);
+
+  const settlements = [];
+  let i = 0;
+  let j = 0;
+  while (i < debtors.length && j < creditors.length) {
+    const pay = Math.min(debtors[i].amount, creditors[j].amount);
+    settlements.push({ from: debtors[i].user, to: creditors[j].user, amount: round2(pay) });
+
+    debtors[i].amount = round2(debtors[i].amount - pay);
+    creditors[j].amount = round2(creditors[j].amount - pay);
+
+    if (debtors[i].amount <= 0.01) i++;
+    if (creditors[j].amount <= 0.01) j++;
+  }
+
+  const memberMap = Object.fromEntries(group.members.map((m) => [m._id.toString(), m]));
+
+  res.status(200).json({
+    success: true,
+    balances: Object.entries(net).map(([userId, amount]) => ({
+      user: memberMap[userId],
+      netBalance: amount
+    })),
+    settlements: settlements.map((s) => ({
+      from: memberMap[s.from],
+      to: memberMap[s.to],
+      amount: s.amount
+    }))
+  });
+});
+
+module.exports = { addExpense, getExpensesByGroup, deleteExpense, getGroupBalances };

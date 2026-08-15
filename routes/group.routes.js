@@ -1,8 +1,18 @@
-const router = require('express').Router();
+const express = require('express');
+const {
+  createGroup,
+  getGroups,
+  getGroupById,
+  addMember
+} = require('../controllers/group.controller');
 const { protect } = require('../middleware/auth.middleware');
-const { createGroup, addMember, getGroup } = require('../controllers/group.controllers');
-router.use(protect); // all group routes require login
-router.post('/', createGroup);
-router.post('/:groupId/members', addMember);
-router.get('/:groupId', getGroup);
+
+const router = express.Router();
+
+router.use(protect); // every group route requires authentication
+
+router.route('/').post(createGroup).get(getGroups);
+router.route('/:id').get(getGroupById);
+router.route('/:id/members').post(addMember);
+
 module.exports = router;
