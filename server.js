@@ -1,12 +1,16 @@
 require('dotenv').config({ quiet: true });
 
 const express = require('express');
+const cors = require('cors');
 const connectDB = require('./config/db');
+
 const { notFound, errorHandler } = require('./middleware/error.middleware');
 
 const app = express();
 
 connectDB();
+const allowedOrigin = process.env.FRONTEND_URL || '*';
+app.use(cors({ origin: allowedOrigin }));
 
 app.use(express.json());
 
